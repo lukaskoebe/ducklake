@@ -1,0 +1,50 @@
+# name: test/sql/storage_format/basic_storage_format.test
+# description: test basic storage format functionality
+# group: [storage_format]
+
+require ducklake
+
+require parquet
+
+statement ok
+ATTACH 'ducklake:__TEST_DIR__/storage_format.db' AS ducklake (DATA_PATH '__TEST_DIR__/storage_format/', METADATA_CATALOG 'metadata')
+
+# Test setting storage format to parquet (default)
+statement ok
+CALL ducklake_set_option('ducklake', 'storage_format', 'parquet')
+
+statement ok
+CREATE TABLE ducklake.test_parquet(i INTEGER, j VARCHAR)
+
+statement ok
+INSERT INTO ducklake.test_parquet VALUES (1, 'parquet'), (2, 'test')
+
+query II
+SELECT * FROM ducklake.test_parquet ORDER BY i
+----
+1	parquet
+2	test
+
+# Test setting storage format to vortex
+statement ok
+CALL ducklake_set_option('ducklake', 'storage_format', 'vortex')
+
+# This should work even if vortex extension is not loaded - the option should be accepted
+statement ok
+CREATE TABLE ducklake.test_format_setting(i INTEGER, j VARCHAR)
+
+# Test unsupported format
+statement error
+CALL ducklake_set_option('ducklake', 'storage_format', 'invalid_format')
+----
+Unsupported storage format "invalid_format", supported options are parquet, vortex
+
+# Test setting vortex compression option
+statement ok  
+CALL ducklake_set_option('ducklake', 'vortex_compression', 'zstd')
+
+# Test invalid vortex compression
+statement error
+CALL ducklake_set_option('ducklake', 'vortex_compression', 'invalid_codec')
+----
+Unsupported codec "invalid_codec" for vortex, supported options are none, lz4, zstd

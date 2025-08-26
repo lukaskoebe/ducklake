@@ -470,9 +470,14 @@ DuckLakeCopyOptions DuckLakeInsert::GetCopyOptions(ClientContext &context, DuckL
 	auto info = make_uniq<CopyInfo>();
 	auto &catalog = copy_input.catalog;
 	info->file_path = copy_input.data_path;
-	info->format = "parquet";
+	
+	// Determine storage format - default to parquet for backward compatibility
+	auto &schema_id = copy_input.schema_id;
+	auto &table_id = copy_input.table_id;
+	string storage_format = catalog.GetConfigOption<string>("storage_format", schema_id, table_id, "parquet");
+	info->format = storage_format;
 	info->is_from = false;
-	// generate the field ids to be written by the parquet writer
+	// generate the field ids to be written by the format writer
 	shared_ptr<DuckLakeFieldData> generated_ids;
 	if (!copy_input.field_data) {
 		// CTAS - generate new ids from columns
@@ -489,33 +494,44 @@ DuckLakeCopyOptions DuckLakeInsert::GetCopyOptions(ClientContext &context, DuckL
 		encryption_input.push_back(Value::STRUCT(std::move(values)));
 		info->options["encryption_config"] = std::move(encryption_input);
 	}
-	auto &schema_id = copy_input.schema_id;
-	auto &table_id = copy_input.table_id;
-	string parquet_compression;
-	if (catalog.TryGetConfigOption("parquet_compression", parquet_compression, schema_id, table_id)) {
-		info->options["compression"].emplace_back(parquet_compression);
+	
+	// Apply format-specific options
+	if (storage_format == "parquet") {
+		// Parquet-specific options
+		string parquet_compression;
+		if (catalog.TryGetConfigOption("parquet_compression", parquet_compression, schema_id, table_id)) {
+			info->options["compression"].emplace_back(parquet_compression);
+		}
+		string parquet_version;
+		if (catalog.TryGetConfigOption("parquet_version", parquet_version, schema_id, table_id)) {
+			info->options["parquet_version"].emplace_back(parquet_version);
+		}
+		string parquet_compression_level;
+		if (catalog.TryGetConfigOption("parquet_compression_level", parquet_compression_level, schema_id, table_id)) {
+			info->options["compression_level"].emplace_back(parquet_compression_level);
+		}
+		string row_group_size;
+		if (catalog.TryGetConfigOption("parquet_row_group_size", row_group_size, schema_id, table_id)) {
+			info->options["row_group_size"].emplace_back(row_group_size);
+		}
+		string row_group_size_bytes;
+		if (catalog.TryGetConfigOption("parquet_row_group_size_bytes", row_group_size_bytes, schema_id, table_id)) {
+			info->options["row_group_size_bytes"].emplace_back(row_group_size_bytes + " bytes");
+		}
+	} else if (storage_format == "vortex") {
+		// Vortex-specific options
+		string vortex_compression;
+		if (catalog.TryGetConfigOption("vortex_compression", vortex_compression, schema_id, table_id)) {
+			info->options["compression"].emplace_back(vortex_compression);
+		}
+		// Add more vortex-specific options here as needed
 	}
-	string parquet_version;
-	if (catalog.TryGetConfigOption("parquet_version", parquet_version, schema_id, table_id)) {
-		info->options["parquet_version"].emplace_back(parquet_version);
-	}
-	string parquet_compression_level;
-	if (catalog.TryGetConfigOption("parquet_compression_level", parquet_compression_level, schema_id, table_id)) {
-		info->options["compression_level"].emplace_back(parquet_compression_level);
-	}
-	string row_group_size;
-	if (catalog.TryGetConfigOption("parquet_row_group_size", row_group_size, schema_id, table_id)) {
-		info->options["row_group_size"].emplace_back(row_group_size);
-	}
-	string row_group_size_bytes;
-	if (catalog.TryGetConfigOption("parquet_row_group_size_bytes", row_group_size_bytes, schema_id, table_id)) {
-		info->options["row_group_size_bytes"].emplace_back(row_group_size_bytes + " bytes");
-	}
+	
 	idx_t target_file_size = catalog.GetConfigOption<idx_t>("target_file_size", schema_id, table_id,
 	                                                        DuckLakeCatalog::DEFAULT_TARGET_FILE_SIZE);
 
-	// Get Parquet Copy function
-	auto &copy_fun = DuckLakeFunctions::GetCopyFunction(context, "parquet");
+	// Get Copy function for the specified format
+	auto &copy_fun = DuckLakeFunctions::GetCopyFunction(context, storage_format);
 
 	auto &fs = FileSystem::GetFileSystem(context);
 	if (!fs.IsRemoteFile(copy_input.data_path)) {

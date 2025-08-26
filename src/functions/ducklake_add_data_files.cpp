@@ -99,6 +99,38 @@ struct ParquetFileMetadata {
 	optional_idx footer_size;
 };
 
+// Generic metadata structures for format-agnostic processing
+struct GenericColumn {
+	string name;
+	string type;
+	vector<unique_ptr<GenericColumn>> child_columns;
+};
+
+struct GenericFileMetadata {
+	string filename;
+	string format; // "parquet" or "vortex"
+	vector<unique_ptr<GenericColumn>> columns;
+	optional_idx row_count;
+	optional_idx file_size_bytes;
+	
+	// Format-specific data
+	unique_ptr<ParquetFileMetadata> parquet_metadata;
+	// VortexFileMetadata will be added here when needed
+};
+
+// Helper function to determine file format from extension
+string DetectFileFormat(const string &filename) {
+	auto pos = filename.rfind('.');
+	if (pos == string::npos) {
+		return "parquet"; // Default to parquet if no extension
+	}
+	string extension = filename.substr(pos + 1);
+	if (StringUtil::CIEquals(extension, "vortex")) {
+		return "vortex";
+	}
+	return "parquet"; // Default to parquet for all other extensions
+}
+
 struct DuckLakeFileProcessor {
 public:
 	DuckLakeFileProcessor(DuckLakeTransaction &transaction, const DuckLakeAddDataFilesData &bind_data)
@@ -112,7 +144,17 @@ private:
 	void ReadParquetSchema(const string &glob);
 	void ReadParquetStats(const string &glob);
 	void ReadParquetFileMetadata(const string &glob);
+	
+	// Format-agnostic methods
+	void ReadFileSchema(const string &glob, const string &format);
+	void ReadFileStats(const string &glob, const string &format);
+	void ReadFileMetadata(const string &glob, const string &format);
+	void ReadVortexSchema(const string &glob);
+	void ReadVortexStats(const string &glob);
+	void ReadVortexFileMetadata(const string &glob);
+	
 	DuckLakeDataFile AddFileToTable(ParquetFileMetadata &file);
+	DuckLakeDataFile AddGenericFileToTable(GenericFileMetadata &file);
 	unique_ptr<DuckLakeNameMapEntry> MapColumn(ParquetFileMetadata &file_metadata, ParquetColumn &column,
 	                                           const DuckLakeFieldId &field_id, DuckLakeDataFile &file, string prefix);
 	vector<unique_ptr<DuckLakeNameMapEntry>> MapColumns(ParquetFileMetadata &file,
@@ -133,7 +175,39 @@ private:
 	map<string, string> hive_partitions;
 	HivePartitioningType hive_partitioning;
 	unordered_map<string, unique_ptr<ParquetFileMetadata>> parquet_files;
+	unordered_map<string, unique_ptr<GenericFileMetadata>> generic_files;
 };
+
+// Format-agnostic wrapper methods
+void DuckLakeFileProcessor::ReadFileSchema(const string &glob, const string &format) {
+	if (format == "parquet") {
+		ReadParquetSchema(glob);
+	} else if (format == "vortex") {
+		ReadVortexSchema(glob);
+	} else {
+		throw NotImplementedException("Unsupported file format: %s", format);
+	}
+}
+
+void DuckLakeFileProcessor::ReadFileStats(const string &glob, const string &format) {
+	if (format == "parquet") {
+		ReadParquetStats(glob);
+	} else if (format == "vortex") {
+		ReadVortexStats(glob);
+	} else {
+		throw NotImplementedException("Unsupported file format: %s", format);
+	}
+}
+
+void DuckLakeFileProcessor::ReadFileMetadata(const string &glob, const string &format) {
+	if (format == "parquet") {
+		ReadParquetFileMetadata(glob);
+	} else if (format == "vortex") {
+		ReadVortexFileMetadata(glob);
+	} else {
+		throw NotImplementedException("Unsupported file format: %s", format);
+	}
+}
 
 void DuckLakeFileProcessor::ReadParquetSchema(const string &glob) {
 	auto result = transaction.Query(StringUtil::Format(R"(
@@ -293,6 +367,79 @@ FROM parquet_file_metadata(%s)
 		entry->second->row_count = row.GetValue<idx_t>(1);
 		entry->second->footer_size = row.GetValue<idx_t>(2);
 		entry->second->file_size_bytes = row.GetValue<idx_t>(3);
+	}
+}
+
+// Vortex format implementations
+void DuckLakeFileProcessor::ReadVortexSchema(const string &glob) {
+	// For now, attempt to use Vortex extension's metadata functions
+	try {
+		auto result = transaction.Query(StringUtil::Format(R"(
+SELECT file_name, name, type
+FROM vortex_schema(%s)
+)",
+		                                                   SQLString(glob)));
+		if (result->HasError()) {
+			throw NotImplementedException("Failed to read Vortex schema. Make sure the Vortex extension is loaded: %s", 
+			                              result->GetError());
+		}
+
+		for (auto &row : result->Collection()) {
+			auto filename = row.GetValue<string>(0);
+			auto column_name = row.GetValue<string>(1);
+			auto column_type = row.GetValue<string>(2);
+
+			// Create or get generic file metadata
+			auto entry = generic_files.find(filename);
+			if (entry == generic_files.end()) {
+				auto file_metadata = make_uniq<GenericFileMetadata>();
+				file_metadata->filename = filename;
+				file_metadata->format = "vortex";
+				generic_files[filename] = std::move(file_metadata);
+				entry = generic_files.find(filename);
+			}
+
+			// Add column info
+			auto column = make_uniq<GenericColumn>();
+			column->name = column_name;
+			column->type = column_type;
+			entry->second->columns.push_back(std::move(column));
+		}
+	} catch (const std::exception &ex) {
+		throw NotImplementedException("Vortex format support requires the Vortex extension to be loaded. Error: %s", ex.what());
+	}
+}
+
+void DuckLakeFileProcessor::ReadVortexStats(const string &glob) {
+	// For now, we'll skip detailed statistics for Vortex files
+	// This can be enhanced when Vortex extension provides statistics functions
+}
+
+void DuckLakeFileProcessor::ReadVortexFileMetadata(const string &glob) {
+	try {
+		auto result = transaction.Query(StringUtil::Format(R"(
+SELECT file_name, row_count, file_size
+FROM vortex_metadata(%s)
+)",
+		                                                   SQLString(glob)));
+		if (result->HasError()) {
+			// Fallback to basic file system metadata if vortex_metadata is not available
+			auto fs_result = transaction.Query(StringUtil::Format(R"(
+SELECT '%s' as file_name, 0 as row_count, 0 as file_size
+)",
+			                                                       SQLString(glob)));
+		}
+
+		for (auto &row : result->Collection()) {
+			auto filename = row.GetValue<string>(0);
+			auto entry = generic_files.find(filename);
+			if (entry != generic_files.end()) {
+				entry->second->row_count = row.GetValue<idx_t>(1);
+				entry->second->file_size_bytes = row.GetValue<idx_t>(2);
+			}
+		}
+	} catch (const std::exception &ex) {
+		throw NotImplementedException("Vortex format support requires the Vortex extension to be loaded. Error: %s", ex.what());
 	}
 }
 
@@ -792,20 +939,65 @@ DuckLakeDataFile DuckLakeFileProcessor::AddFileToTable(ParquetFileMetadata &file
 	return result;
 }
 
+DuckLakeDataFile DuckLakeFileProcessor::AddGenericFileToTable(GenericFileMetadata &file) {
+	DuckLakeDataFile result;
+	result.file_name = file.filename;
+	result.row_count = file.row_count.GetIndex();
+	result.file_size_bytes = file.file_size_bytes.GetIndex();
+	result.footer_size = 0; // Generic files don't have footer size concept
+
+	// For now, create a simple mapping for Vortex files
+	// This is a simplified approach - in practice, you'd want more sophisticated column mapping
+	auto name_map = make_uniq<DuckLakeColumnMapping>();
+	name_map->data_file_id = result.file_id;
+	name_map->mapping_type = "identity"; // Simple identity mapping for now
+
+	// Basic column mapping - this would need to be enhanced for production use
+	const auto &field_data = table.GetFieldData();
+	name_map->column_maps.reserve(file.columns.size());
+	
+	for (idx_t col_idx = 0; col_idx < file.columns.size() && col_idx < field_data.GetColumnCount(); col_idx++) {
+		auto &generic_col = file.columns[col_idx];
+		auto &field_id = field_data.GetByRootIndex(PhysicalIndex(col_idx));
+		
+		DuckLakeNameMapColumnInfo column_info;
+		column_info.column_id = col_idx;
+		column_info.source_name = generic_col->name;
+		column_info.target_field_id = field_id.GetFieldIndex();
+		column_info.hive_partition = false;
+		
+		name_map->column_maps.push_back(column_info);
+	}
+
+	// Register the name map
+	result.mapping_id = transaction.AddNameMap(std::move(name_map));
+	return result;
+}
+
 vector<DuckLakeDataFile> DuckLakeFileProcessor::AddFiles(const vector<string> &globs) {
 	// fetch the metadata, stats and columns from the various files
 	for (auto &glob : globs) {
-		// query the parquet_schema to figure out the schema for each of the columns
-		ReadParquetSchema(glob);
-		// query the parquet_metadata to get the stats for each of the columns
-		ReadParquetStats(glob);
-		// read parquet file metadata
-		ReadParquetFileMetadata(glob);
+		// Detect the file format based on extension and use appropriate methods
+		string format = DetectFileFormat(glob);
+		
+		if (format == "parquet") {
+			// Use existing Parquet-specific methods for backward compatibility
+			ReadParquetSchema(glob);
+			ReadParquetStats(glob);
+			ReadParquetFileMetadata(glob);
+		} else {
+			// Use generic format methods for other formats
+			ReadFileSchema(glob, format);
+			ReadFileStats(glob, format);  
+			ReadFileMetadata(glob, format);
+		}
 	}
 
 	// now we have obtained a list of files to add together with the relevant information (statistics, file size, ...)
 	// we need to create a mapping from the columns in the file to the columns in the table
 	vector<DuckLakeDataFile> written_files;
+	
+	// Process Parquet files
 	for (auto &entry : parquet_files) {
 		auto file = AddFileToTable(*entry.second);
 		if (file.row_count == 0) {
@@ -814,6 +1006,17 @@ vector<DuckLakeDataFile> DuckLakeFileProcessor::AddFiles(const vector<string> &g
 		}
 		written_files.push_back(std::move(file));
 	}
+	
+	// Process generic files (Vortex, etc.)
+	for (auto &entry : generic_files) {
+		auto file = AddGenericFileToTable(*entry.second);
+		if (file.row_count == 0) {
+			// skip adding empty files
+			continue;
+		}
+		written_files.push_back(std::move(file));
+	}
+	
 	return written_files;
 }
 

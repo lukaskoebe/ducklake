@@ -1,0 +1,20 @@
+# name: test/sql/storage_format/add_vortex_files.test
+# description: test adding vortex files to ducklake  
+# group: [storage_format]
+
+require ducklake
+
+statement ok
+ATTACH 'ducklake:__TEST_DIR__/vortex_files.db' AS ducklake (DATA_PATH '__TEST_DIR__/vortex_files/', METADATA_CATALOG 'metadata')
+
+statement ok
+CREATE TABLE ducklake.test(col1 INTEGER, col2 VARCHAR)
+
+statement ok
+INSERT INTO ducklake.test VALUES (100, 'hello')
+
+# This test will fail without the vortex extension, but demonstrates the expected behavior
+statement error  
+CALL ducklake_add_data_files('ducklake', 'test', '__TEST_DIR__/test_file.vortex')
+----
+Vortex format support requires the Vortex extension to be loaded

@@ -73,6 +73,39 @@ static unique_ptr<FunctionData> DuckLakeSetOptionBind(ClientContext &context, Ta
 		value = val.GetValue<bool>() ? "true" : "false";
 	} else if (option == "hive_file_pattern") {
 		value = val.GetValue<bool>() ? "true" : "false";
+	} else if (option == "storage_format") {
+		auto format = val.DefaultCastAs(LogicalType::VARCHAR).GetValue<string>();
+		vector<string> supported_formats {"parquet", "vortex"};
+		bool found = false;
+		for (auto &fmt : supported_formats) {
+			if (StringUtil::CIEquals(fmt, format)) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			auto supported = StringUtil::Join(supported_formats, ", ");
+			throw NotImplementedException("Unsupported storage format \"%s\", supported options are %s", format,
+			                              supported);
+		}
+		value = StringUtil::Lower(format);
+	} else if (option == "vortex_compression") {
+		// Vortex compression options - this would depend on what the Vortex extension supports
+		auto codec = val.DefaultCastAs(LogicalType::VARCHAR).GetValue<string>();
+		vector<string> supported_algorithms {"none", "lz4", "zstd"};
+		bool found = false;
+		for (auto &algorithm : supported_algorithms) {
+			if (StringUtil::CIEquals(algorithm, codec)) {
+				found = true;
+				break;
+			}
+		}
+		if (!found) {
+			auto supported = StringUtil::Join(supported_algorithms, ", ");
+			throw NotImplementedException("Unsupported codec \"%s\" for vortex, supported options are %s", codec,
+			                              supported);
+		}
+		value = StringUtil::Lower(codec);
 	} else {
 		throw NotImplementedException("Unsupported option %s", option);
 	}
