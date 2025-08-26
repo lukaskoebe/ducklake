@@ -942,8 +942,8 @@ DuckLakeDataFile DuckLakeFileProcessor::AddFileToTable(ParquetFileMetadata &file
 DuckLakeDataFile DuckLakeFileProcessor::AddGenericFileToTable(GenericFileMetadata &file) {
 	DuckLakeDataFile result;
 	result.file_name = file.filename;
-	result.row_count = file.row_count.GetIndex();
-	result.file_size_bytes = file.file_size_bytes.GetIndex();
+	result.row_count = file.row_count.IsValid() ? file.row_count.GetIndex() : 0;
+	result.file_size_bytes = file.file_size_bytes.IsValid() ? file.file_size_bytes.GetIndex() : 0;
 	result.footer_size = 0; // Generic files don't have footer size concept
 
 	// For now, create a simple mapping for Vortex files

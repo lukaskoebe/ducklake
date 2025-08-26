@@ -115,3 +115,34 @@ parquet_compression	uncompressed	GLOBAL	NULL
 parquet_compression	lz4	SCHEMA	s1
 parquet_compression	gzip	TABLE	s1.t1
 parquet_compression	zstd	TABLE	main.t1
+
+# test storage format setting
+statement ok
+CALL ducklake.set_option('storage_format', 'parquet')
+
+# test storage format error handling
+statement error
+CALL ducklake.set_option('storage_format', 'invalid')
+----
+Unsupported storage format "invalid", supported options are parquet, vortex
+
+# test vortex format setting
+statement ok
+CALL ducklake.set_option('storage_format', 'vortex')
+
+# test vortex compression setting  
+statement ok
+CALL ducklake.set_option('vortex_compression', 'zstd')
+
+# test vortex compression error handling
+statement error
+CALL ducklake.set_option('vortex_compression', 'invalid')
+----
+Unsupported codec "invalid" for vortex, supported options are none, lz4, zstd
+
+# check that storage format options are persisted
+query IIII
+SELECT option_name, value, scope, scope_entry FROM ducklake.options() WHERE option_name IN ('storage_format', 'vortex_compression') ORDER BY option_name;
+----
+storage_format	vortex	GLOBAL	NULL
+vortex_compression	zstd	GLOBAL	NULL
