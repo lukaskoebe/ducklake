@@ -217,15 +217,21 @@ void DuckLakeDelete::FlushDelete(DuckLakeTransaction &transaction, ClientContext
 	}
 
 	auto &fs = FileSystem::GetFileSystem(context);
-	auto delete_file_uuid = "ducklake-" + transaction.GenerateUUID() + "-delete.parquet";
+	
+	// Get storage format from table configuration - default to parquet for backward compatibility
+	auto &catalog = table.GetCatalog();
+	string storage_format = catalog.GetConfigOption<string>("storage_format", table.GetSchemaId(), table.GetTableId(), "parquet");
+	string file_extension = (storage_format == "vortex") ? ".vortex" : ".parquet";
+	
+	auto delete_file_uuid = "ducklake-" + transaction.GenerateUUID() + "-delete" + file_extension;
 	string delete_file_path = DuckLakeUtil::JoinPath(fs, table.DataPath(), delete_file_uuid);
 
 	auto info = make_uniq<CopyInfo>();
 	info->file_path = delete_file_path;
-	info->format = "parquet";
+	info->format = storage_format;
 	info->is_from = false;
 
-	// generate the field ids to be written by the parquet writer
+	// generate the field ids to be written by the format writer
 	// these field ids follow icebergs' ids and names for the delete files
 	child_list_t<Value> values;
 	values.emplace_back("file_path", Value::INTEGER(MultiFileReader::FILENAME_FIELD_ID));
@@ -243,7 +249,7 @@ void DuckLakeDelete::FlushDelete(DuckLakeTransaction &transaction, ClientContext
 	}
 
 	// get the actual copy function and bind it
-	auto &copy_fun = DuckLakeFunctions::GetCopyFunction(context, "parquet");
+	auto &copy_fun = DuckLakeFunctions::GetCopyFunction(context, storage_format);
 
 	CopyFunctionBindInput bind_input(*info);
 
